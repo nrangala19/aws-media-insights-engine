@@ -1648,6 +1648,7 @@ Resources:
                   - !GetAtt StartMediaConvertFunction.Arn
                   - !GetAtt StartThumbnailFunction.Arn
                   - !GetAtt CheckThumbnailFunction.Arn
+                  - !GetAtt Mediainfo.Arn
                   - !GetAtt CheckMediaConvertFunction.Arn
                   - !GetAtt StartTranscribeFunction.Arn
                   - !GetAtt CheckTranscribeFunction.Arn
