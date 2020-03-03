@@ -77,7 +77,7 @@ Resources:
               - "es:ESHttpGet"
               - "es:ESHttpPost"
             Resource:
-              - !Join ["", ["arn:aws:es:", !Ref "AWS::Region", ":", !Ref "AWS::AccountId", ":domain/", "mie-es/_search"]]
+              - !Join ["", ["arn:aws:es:", !Ref "AWS::Region", ":", !Ref "AWS::AccountId", ":domain/", "mie-es2/_search"]]
           - Effect: Allow
             Principal:
               AWS:
@@ -85,8 +85,8 @@ Resources:
             Action:
               - es:*
             Resource:
-              - !Join ["", ["arn:aws:es:", !Ref "AWS::Region", ":", !Ref "AWS::AccountId", ":domain/", "mie-es/*"]]
-      DomainName: "mie-es"
+              - !Join ["", ["arn:aws:es:", !Ref "AWS::Region", ":", !Ref "AWS::AccountId", ":domain/", "mie-es2/*"]]
+      DomainName: "mie-es2"
       EBSOptions:
         EBSEnabled: true
         Iops: 0

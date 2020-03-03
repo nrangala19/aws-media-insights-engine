@@ -23,6 +23,8 @@ Parameters:
     Type: String
   Mediaconvert:
     Type: String
+  Mediainfo:
+    Type: String
   Thumbnail:
     Type: String
   Transcribe:
@@ -37,6 +39,15 @@ Parameters:
     Type: String
 
 Resources:
+  defaultPrelimVideoStage:
+    Type: Custom::CustomResource
+    Properties:
+      ServiceToken: !Ref WorkflowCustomResourceArn
+      ResourceType: "Stage"
+      Name: "defaultPrelimVideoStage"
+      Operations:
+        - !Ref Thumbnail
+        - !Ref Mediainfo
   defaultVideoStage:
     Type: Custom::CustomResource
     Properties:
@@ -52,8 +63,7 @@ Resources:
         - !Ref LabelDetection
         - !Ref PersonTracking
         - !Ref Mediaconvert
-        - !Ref Thumbnail
-  
+
   defaultAudioStage:
     Type: Custom::CustomResource
     Properties:
@@ -85,6 +95,7 @@ Resources:
 
   MieCompleteWorkflow:
     DependsOn:
+      - defaultPrelimVideoStage
       - defaultVideoStage
       - defaultAudioStage
       - defaultTextStage
@@ -95,10 +106,13 @@ Resources:
       ResourceType: "Workflow"
       Name: "MieCompleteWorkflow"
       RoleArn: !Ref StepfunctionRoleArn
-      StartAt: !GetAtt defaultVideoStage.Name
+      StartAt: !GetAtt defaultPrelimVideoStage.Name
       Stages: !Sub
         - |-
           {
+            "${defaultPrelimVideoStage}":{
+              "Next": "${defaultVideoStage}"
+              },
             "${defaultVideoStage}":{
               "Next": "${defaultAudioStage}"
               },
@@ -113,6 +127,7 @@ Resources:
               }
           }
         - {
+          defaultPrelimVideoStage: !GetAtt defaultPrelimVideoStage.Name,
           defaultVideoStage: !GetAtt defaultVideoStage.Name,
           defaultAudioStage: !GetAtt defaultAudioStage.Name,
           defaultTextStage: !GetAtt defaultTextStage.Name,

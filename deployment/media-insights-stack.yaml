@@ -29,7 +29,7 @@ Resources:
   # Custom log group
   MieLogGroup:
     Type: AWS::Logs::LogGroup
-    Properties: 
+    Properties:
       LogGroupName: MediaInsightsLogs
       RetentionInDays: 14
 
@@ -1154,6 +1154,34 @@ Resources:
                 Resource: !GetAtt MediaInsightsDataplaneApiStack.Outputs.APIHandlerArn
                 Effect: "Allow"
 
+  mediainfoLambdaRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - "sts:AssumeRole"
+            Effect: "Allow"
+            Principal:
+              Service: "lambda.amazonaws.com"
+      Policies:
+        - PolicyName: "mediainfoLambdaAccess"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Action:
+                  - "s3:GetObject"
+                  - "s3:PutObject"
+                Resource: !Sub "arn:aws:s3:::${Dataplane}/*"
+                Effect: "Allow"
+              - Action: "lambda:InvokeFunction"
+                Resource: !GetAtt MediaInsightsDataplaneApiStack.Outputs.APIHandlerArn
+                Effect: "Allow"
+
   mediaConvertS3Role:
     Type: "AWS::IAM::Role"
     Metadata:
@@ -1583,7 +1611,7 @@ Resources:
     Type: "AWS::IAM::Role"
     Properties:
       Tags:
-        - 
+        -
           Key: "environment"
           Value: "mie"
       AssumeRolePolicyDocument:
@@ -1619,6 +1647,7 @@ Resources:
                   - !GetAtt checkPersonTracking.Arn
                   - !GetAtt StartMediaConvertFunction.Arn
                   - !GetAtt StartThumbnailFunction.Arn
+                  - !GetAtt CheckThumbnailFunction.Arn
                   - !GetAtt CheckMediaConvertFunction.Arn
                   - !GetAtt StartTranscribeFunction.Arn
                   - !GetAtt CheckTranscribeFunction.Arn
@@ -1656,6 +1685,34 @@ Resources:
           OPERATOR_NAME: "GenericDataLookup"
           DataplaneEndpoint: !GetAtt MediaInsightsDataplaneApiStack.Outputs.APIHandlerName
           DataLookupRole: !GetAtt genericDataLookupLambdaRole.Arn
+
+  # Mediainfo
+
+  Mediainfo:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Handler: "mediainfo.lambda_handler"
+      Layers:
+        - !Ref MediaInsightsEnginePython37Layer
+      Role: !GetAtt mediainfoLambdaRole.Arn
+      Code:
+        S3Bucket: !FindInMap ["SourceCode", "General", "S3Bucket"]
+        S3Key:
+          !Join [
+            "/",
+            [
+            !FindInMap ["SourceCode", "General", "CodeKeyPrefix"],
+            "mediainfo.zip",
+            ],
+          ]
+      Runtime: "python3.7"
+      Timeout: 300
+      Environment:
+        Variables:
+          OPERATOR_NAME: "Mediainfo"
+          DataplaneEndpoint: !GetAtt MediaInsightsDataplaneApiStack.Outputs.APIHandlerName
+          DataLookupRole: !GetAtt mediainfoLambdaRole.Arn
+          LD_LIBRARY_PATH: "/opt/python/"
 
   # Comprehend
 
@@ -2150,6 +2207,31 @@ Resources:
           DataplaneEndpoint: !GetAtt MediaInsightsDataplaneApiStack.Outputs.APIHandlerName
           DATAPLANE_BUCKET: !Ref "Dataplane"
 
+  CheckThumbnailFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Handler: "check_thumbnail.lambda_handler"
+      Layers:
+        - !Ref "MediaInsightsEnginePython37Layer"
+      Role: !GetAtt "mediaConvertLambdaRole.Arn"
+      Code:
+        S3Bucket: !FindInMap ["SourceCode", "General", "S3Bucket"]
+        S3Key:
+          !Join [
+            "/",
+            [
+            !FindInMap ["SourceCode", "General", "CodeKeyPrefix"],
+            "check_thumbnail.zip",
+            ],
+          ]
+      Runtime: "python3.7"
+      Timeout: 60
+      Environment:
+        Variables:
+          mediaconvertRole: !GetAtt "mediaConvertS3Role.Arn"
+          DataplaneEndpoint: !GetAtt MediaInsightsDataplaneApiStack.Outputs.APIHandlerName
+          DATAPLANE_BUCKET: !Ref "Dataplane"
+
   CheckMediaConvertFunction:
     Type: "AWS::Lambda::Function"
     Properties:
@@ -2317,6 +2399,17 @@ Resources:
       StartLambdaArn: !GetAtt startGenericDataLookup.Arn
       StateMachineExecutionRoleArn: !GetAtt StepFunctionRole.Arn
 
+  MediainfoOperation:
+    Type: Custom::CustomResource
+    Properties:
+      ServiceToken: !GetAtt MediaInsightsWorkflowApi.Outputs.WorkflowCustomResourceArn
+      ResourceType: "Operation"
+      Name: "Mediainfo"
+      Type: "Sync"
+      Configuration: { "MediaType": "Video", "Enabled": true }
+      StartLambdaArn: !GetAtt Mediainfo.Arn
+      StateMachineExecutionRoleArn: !GetAtt StepFunctionRole.Arn
+
   MediaconvertOperation:
     Type: Custom::CustomResource
     Properties:
@@ -2324,7 +2417,7 @@ Resources:
       ResourceType: "Operation"
       Name: "Mediaconvert"
       Type: "Async"
-      Configuration: { "MediaType": "Video", "Enabled": true }
+      Configuration: { "MediaType": "Video", "Enabled": false }
       StartLambdaArn: !GetAtt StartMediaConvertFunction.Arn
       MonitorLambdaArn: !GetAtt CheckMediaConvertFunction.Arn
       StateMachineExecutionRoleArn: !GetAtt StepFunctionRole.Arn
@@ -2335,9 +2428,10 @@ Resources:
       ServiceToken: !GetAtt MediaInsightsWorkflowApi.Outputs.WorkflowCustomResourceArn
       ResourceType: "Operation"
       Name: "Thumbnail"
-      Type: "Sync"
+      Type: "Async"
       Configuration: { "MediaType": "Video", "Enabled": true }
       StartLambdaArn: !GetAtt StartThumbnailFunction.Arn
+      MonitorLambdaArn: !GetAtt CheckThumbnailFunction.Arn
       StateMachineExecutionRoleArn: !GetAtt StepFunctionRole.Arn
 
   TranscribeOperation:
@@ -2377,7 +2471,7 @@ Resources:
       ResourceType: "Operation"
       Name: "Polly"
       Type: "Async"
-      Configuration: { "MediaType": "Text", "Enabled": true }
+      Configuration: { "MediaType": "Text", "Enabled": false }
       StartLambdaArn: !GetAtt StartPollyFunction.Arn
       MonitorLambdaArn: !GetAtt CheckPollyFunction.Arn
       StateMachineExecutionRoleArn: !GetAtt StepFunctionRole.Arn
@@ -2528,7 +2622,7 @@ Resources:
       ResourceType: "Operation"
       Name: "personTracking"
       Type: "Async"
-      Configuration: { "MediaType": "Video", "Enabled": true }
+      Configuration: { "MediaType": "Video", "Enabled": false }
       StartLambdaArn: !GetAtt startPersonTracking.Arn
       MonitorLambdaArn: !GetAtt checkPersonTracking.Arn
       StateMachineExecutionRoleArn: !GetAtt StepFunctionRole.Arn
@@ -2601,6 +2695,7 @@ Resources:
         LabelDetection: !GetAtt labelDetectionOperation.Name
         PersonTracking: !GetAtt personTrackingOperation.Name
         Mediaconvert: !GetAtt MediaconvertOperation.Name
+        Mediainfo: !GetAtt MediainfoOperation.Name
         Thumbnail: !GetAtt ThumbnailOperation.Name
         Transcribe: !GetAtt TranscribeOperation.Name
         Translate: !GetAtt TranslateOperation.Name
