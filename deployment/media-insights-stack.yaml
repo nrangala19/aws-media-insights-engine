@@ -338,6 +338,8 @@ Resources:
           - id: W28
             reason: "Table name is constructed with stack name. On update, we need to keep the existing table name."
     Properties:
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: Name
@@ -355,6 +357,8 @@ Resources:
           - id: W28
             reason: "Table name is constructed with stack name. On update, we need to keep the existing table name."
     Properties:
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: Name
@@ -372,6 +376,8 @@ Resources:
           - id: W28
             reason: "Table name is constructed with stack name. On update, we need to keep the existing table name."
     Properties:
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: Name
@@ -389,6 +395,8 @@ Resources:
           - id: W28
             reason: "Table name is constructed with stack name. On update, we need to keep the existing table name."
     Properties:
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: Name
@@ -406,6 +414,8 @@ Resources:
           - id: W28
             reason: "Table name is constructed with stack name. On update, we need to keep the existing table name."
     Properties:
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: Id
@@ -427,6 +437,8 @@ Resources:
           - id: W28
             reason: "Table name is constructed with stack name. On update, we need to keep the existing table name."
     Properties:
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: Id
@@ -461,6 +473,8 @@ Resources:
           - id: W28
             reason: "Table name is constructed with stack name. On update, we need to keep the existing table name."
     Properties:
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: AssetId
@@ -489,6 +503,8 @@ Resources:
             AllowedMethods: ["GET", "POST"]
             AllowedOrigins: ["*"]
             Id: AllowUploadsFromWebApp
+      VersioningConfiguration:
+        Status: "Enabled"
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -500,14 +516,13 @@ Resources:
       Bucket: !Ref Dataplane
       PolicyDocument:
         Statement:
-          -
-            Effect: Deny
+          - Effect: Deny
             Principal: "*"
             Action: "*"
             Resource: !Sub "arn:aws:s3:::${Dataplane}/*"
             Condition:
               Bool:
-                "aws:SecureTransport": false
+                aws:SecureTransport: false
 
   # Service - cognito / security infrastructure
 
@@ -1176,6 +1191,7 @@ Resources:
               - Action:
                   - "s3:GetObject"
                   - "s3:PutObject"
+                  - "s3:DeleteObject"
                 Resource: !Sub "arn:aws:s3:::${Dataplane}/*"
                 Effect: "Allow"
               - Action: "lambda:InvokeFunction"
@@ -2411,6 +2427,17 @@ Resources:
       StartLambdaArn: !GetAtt Mediainfo.Arn
       StateMachineExecutionRoleArn: !GetAtt StepFunctionRole.Arn
 
+  MediainfoOperationImage:
+    Type: Custom::CustomResource
+    Properties:
+      ServiceToken: !GetAtt MediaInsightsWorkflowApi.Outputs.WorkflowCustomResourceArn
+      ResourceType: "Operation"
+      Name: "MediainfoImage"
+      Type: "Sync"
+      Configuration: { "MediaType": "Image", "Enabled": true }
+      StartLambdaArn: !GetAtt Mediainfo.Arn
+      StateMachineExecutionRoleArn: !GetAtt StepFunctionRole.Arn
+
   MediaconvertOperation:
     Type: Custom::CustomResource
     Properties:
@@ -2655,6 +2682,7 @@ Resources:
           Fn::GetAtt:
             - MediaInsightsWorkflowApi
             - Outputs.WorkflowCustomResourceArn
+        MediainfoImage: !GetAtt MediainfoOperationImage.Name
         CelebRecognitionImage: !GetAtt celebrityRecognitionOperationImage.Name
         ContentModerationImage: !GetAtt contentModerationOperationImage.Name
         FaceDetectionImage: !GetAtt faceDetectionOperationImage.Name

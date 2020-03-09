@@ -7,6 +7,8 @@ Parameters:
   WorkflowCustomResourceArn:
     Type: String
     Description: "ARN of the Media Insights custom resource that handles creating operations, stages and workflows"
+  MediainfoImage:
+    Type: String
   CelebRecognitionImage:
     Type: String
   ContentModerationImage:
@@ -21,6 +23,15 @@ Parameters:
 Resources:
 # Stages
 
+  ValidationStage:
+    Type: Custom::CustomResource
+    Properties:
+      ServiceToken: !Ref WorkflowCustomResourceArn
+      ResourceType: "Stage"
+      Name: "ValidationStage"
+      Operations:
+        - !Ref MediainfoImage
+
   RekognitionStage:
     Type: Custom::CustomResource
     Properties:
@@ -33,11 +44,12 @@ Resources:
         - !Ref FaceDetectionImage
         - !Ref FaceSearchImage
         - !Ref LabelDetectionImage
-  
+
   # Workflows
 
   ImageWorkflow:
     DependsOn:
+      - ValidationStage
       - RekognitionStage
     Type: Custom::CustomResource
     Properties:
@@ -45,16 +57,19 @@ Resources:
       ResourceType: "Workflow"
       RoleArn: !Ref StepfunctionRoleArn
       Name: "ImageWorkflow"
+      StartAt: !GetAtt ValidationStage.Name
       Stages: !Sub
         - |-
           {
+            "${ValidationStage}":{
+                "Next": "${rekognitionSuite}"
+              },
             "${rekognitionSuite}":
             {
               "End": true
             }
           }
         - {
+          ValidationStage: !GetAtt ValidationStage.Name,
           rekognitionSuite: !GetAtt RekognitionStage.Name
         }
-      StartAt: !GetAtt RekognitionStage.Name
-
