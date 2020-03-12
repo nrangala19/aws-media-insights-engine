@@ -2380,7 +2380,19 @@ def list_workflow_executions_by_status(Status):
 
     workflow_executions = response['Items']
     while 'LastEvaluatedKey' in response:
-        response = table.query(ExclusiveStartKey=response['LastEvaluatedKey'])
+        response = table.query(
+            ExclusiveStartKey=response['LastEvaluatedKey'],
+            IndexName='WorkflowExecutionStatus',
+            ExpressionAttributeNames={
+                '#workflow_status': "Status",
+                '#workflow_name': "Name"
+            },
+            ExpressionAttributeValues={
+                ':workflow_status': Status
+            },
+            KeyConditionExpression='#workflow_status = :workflow_status',
+            ProjectionExpression = projection_expression
+        )
         workflow_executions.extend(response['Items'])
 
     return workflow_executions
@@ -2416,7 +2428,19 @@ def list_workflow_executions_by_assetid(AssetId):
 
     workflow_executions = response['Items']
     while 'LastEvaluatedKey' in response:
-        response = table.query(ExclusiveStartKey=response['LastEvaluatedKey'])
+        response = table.query(
+            ExclusiveStartKey=response['LastEvaluatedKey'],
+            IndexName='WorkflowExecutionAssetId',
+            ExpressionAttributeNames={
+                '#workflow_status': "Status",
+                '#workflow_name': "Name"
+            },
+            ExpressionAttributeValues={
+                ':assetid': AssetId
+            },
+            KeyConditionExpression='AssetId = :assetid',
+            ProjectionExpression = projection_expression
+        )
         workflow_executions.extend(response['Items'])
 
     return workflow_executions
