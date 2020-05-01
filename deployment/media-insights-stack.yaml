@@ -326,6 +326,13 @@ Resources:
                   - "Fn::GetAtt":
                       - WorkflowExecutionLambdaDeadLetterQueue
                       - Arn
+              # Security - step function callback can only apply to * resource
+              - Effect: Allow
+                Action:
+                  - states:SendTaskSuccess
+                  - states:SendTaskFailure
+                  - states:SendTaskHeartbeat
+                Resource: "*"
 
   OperationLambdaExecutionRole:
     Type: AWS::IAM::Role
@@ -458,6 +465,15 @@ Resources:
                   - "Fn::GetAtt":
                       - WorkflowSchedulerLambda
                       - Arn
+              # Security - step function callback can only apply to * resource
+              - Effect: Allow
+                Action:
+                  - states:SendTaskSuccess
+                  - states:SendTaskFailure
+                  - states:SendTaskHeartbeat
+                Resource: "*"
+
+                      
 
   StepFunctionRole:
     Type: "AWS::IAM::Role"
@@ -627,6 +643,8 @@ Resources:
           AttributeType: S
         - AttributeName: AssetId
           AttributeType: S
+        - AttributeName: Name
+          AttributeType: S
       KeySchema:
         - AttributeName: Id
           KeyType: HASH
@@ -640,6 +658,12 @@ Resources:
         - IndexName: WorkflowExecutionAssetId
           KeySchema:
             - AttributeName: AssetId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: WorkflowExecutionName
+          KeySchema:
+            - AttributeName: Name
               KeyType: HASH
           Projection:
             ProjectionType: ALL

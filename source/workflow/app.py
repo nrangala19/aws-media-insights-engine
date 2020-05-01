@@ -19,16 +19,6 @@ from MediaInsightsEngineLambdaHelper import MediaInsightsOperationHelper
 from MediaInsightsEngineLambdaHelper import MasExecutionError
 
 # Setup logging
-# Logging Configuration
-#extra = {'requestid': app.current_request.context}
-# fmt = '[%(levelname)s] [%(funcName)s] - %(message)s'
-# logger = logging.getLogger('LUCIFER')
-# logging.basicConfig(format=fmt)
-# root = logging.getLogger()
-# if root.handlers:
-#     for handler in root.handlers:
-#         root.removeHandler(handler)
-# logging.basicConfig(format=fmt)
 logger = logging.getLogger('boto3')
 logger.setLevel(logging.INFO)
 
@@ -193,6 +183,7 @@ def workflow_scheduler_lambda(event, context):
         if "Id" in workflow_execution:
             
             update_workflow_execution_status(workflow_execution["Id"], awsmie.WORKFLOW_STATUS_ERROR, "Exception in workflow_scheduler_lambda {}".format(e))
+            
         raise 
 
     return arn 
@@ -232,6 +223,7 @@ def start_wait_operation_lambda(event, context):
     event is 
     - Operation input
     - Operation configuration
+    - taskToken
 
     returns:
     Operation output
@@ -242,12 +234,13 @@ def start_wait_operation_lambda(event, context):
     operator_object = MediaInsightsOperationHelper(event)
 
     try:
-        update_workflow_execution_status(operator_object.workflow_execution_id, awsmie.WORKFLOW_STATUS_WAITING, "")
+        update_workflow_execution_status(operator_object.workflow_execution_id, awsmie.WORKFLOW_STATUS_WAITING, "", operator_object.taskToken, event)
     except Exception as e:
         operator_object.update_workflow_status("Error")
         operator_object.add_workflow_metadata(WaitError="Unable to set workflow status to Waiting {e}".format(e=str(e)))
         raise MasExecutionError(operator_object.return_output_object())
 
+    operator_object.update_workflow_status("Complete")
     return operator_object.return_output_object()
 
 def check_wait_operation_lambda(event, context):
@@ -570,17 +563,60 @@ def start_next_stage_execution(trigger, stage_name, workflow_execution):
     return workflow_execution
 
     
-def update_workflow_execution_status(id, status, message):
+def update_workflow_execution_status(id, status, message, wait_token=None, wait_event=None):
     """
     Get the workflow execution by id from dyanamo and assign to this object
     :param id: The id of the workflow execution
     :param status: The new status of the workflow execution
+    :param wait_token: optional wait token if new status is Waiting
 
     """
     print("Update workflow execution {} set status = {}".format(id, status))
     execution_table = DYNAMO_RESOURCE.Table(WORKFLOW_EXECUTION_TABLE_NAME)
+
+    # look up the current workflow execution
+    response = execution_table.get_item(
+            Key={
+                'Id': id
+            },
+            ConsistentRead=True)
+
+    if "Item" in response:
+        we = response["Item"]
+    else:
+        raise ValueError("Workflow execution not found")
+
     
-    if status == awsmie.WORKFLOW_STATUS_ERROR:
+    if status == awsmie.WORKFLOW_STATUS_WAITING and wait_token==None:
+        raise ValueError("No wait token provided while changing the workflow status to Waiting")
+    elif status == awsmie.WORKFLOW_STATUS_WAITING:
+        response = execution_table.update_item(
+            Key={
+                'Id': id
+            },
+            UpdateExpression='SET #workflow_status = :workflow_status, TaskToken = :wait_token, WaitEvent = :wait_event',
+            ExpressionAttributeNames={
+                '#workflow_status': "Status"
+            },
+            ExpressionAttributeValues={
+                ':workflow_status': status,
+                ':wait_token': wait_token,
+                ':wait_event': wait_event
+            }
+        )
+
+    elif status == awsmie.WORKFLOW_STATUS_ERROR:
+        if we["Status"] == awsmie.WORKFLOW_STATUS_WAITING:
+            operator_object = MediaInsightsOperationHelper(we["wait_event"])
+            operator_object.update_workflow_status("Error")
+            operator_object.add_workflow_metadata(WaitError="Unable to schedule Waiting workflow")
+            
+            response = SFN_CLIENT.send_task_failure(
+                taskToken=we["TaskToken"],
+                error=json.dumps(MasExecutionError(operator_object.return_output_object())),
+                cause=""
+            )
+            
         response = execution_table.update_item(
             Key={
                 'Id': id
@@ -594,8 +630,17 @@ def update_workflow_execution_status(id, status, message):
                 ':message': message
 
             }
-        )
+        )     
+            
     else:
+        if we["Status"] == awsmie.WORKFLOW_STATUS_RESUMED:
+            operator_object = MediaInsightsOperationHelper(we["WaitEvent"])
+            operator_object.update_workflow_status("Complete")
+            response = SFN_CLIENT.send_task_success(
+                taskToken=we["TaskToken"],
+                output=json.dumps(operator_object.return_output_object())
+            )
+                         
         response = execution_table.update_item(
             Key={
                 'Id': id

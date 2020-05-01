@@ -24,6 +24,8 @@ from jsonschema import validate, ValidationError
 from urllib.request import build_opener, HTTPHandler, Request
 from MediaInsightsEngineLambdaHelper import DataPlane
 from MediaInsightsEngineLambdaHelper import Status as awsmie
+from MediaInsightsEngineLambdaHelper import MediaInsightsOperationHelper
+from MediaInsightsEngineLambdaHelper import MasExecutionError
 import os
 
 APP_NAME = "workflowapi"
@@ -254,7 +256,7 @@ def create_operation_api():
 
         {
             "Name":"operation-name",
-            "Type": ["Async"|"Sync"],
+            "Type": ["Async"|"Sync"|"Await"],
             "Configuration" : {
                     "MediaType": "Video",
                     "Enabled:": True,
@@ -274,7 +276,7 @@ def create_operation_api():
 
             {
                 "Name": string,
-                "Type": ["Async"|"Sync"],
+                "Type": ["Async"|"Sync"|"Await"],
                 "Configuration" : {
                     "MediaType": "Video|Frame|Audio|Text|...",
                     "Enabled:": boolean,
@@ -325,10 +327,10 @@ def create_operation(operation):
         # FIXME - can jsonschema validate this?
         if operation["Type"] == "Async":
             checkRequiredInput("MonitorLambdaArn", operation, "Operation monitoring lambda function ARN")
-        elif operation["Type"] == "Sync":
+        elif operation["Type"] in ["Sync","Await"]:
             pass
         else:
-            raise BadRequestError('Operation Type must in ["Async"|"Sync"]')
+            raise BadRequestError('Operation Type must in ["Async", "Sync", "Await"]')
 
         # Check if this operation already exists
         response = operation_table.get_item(
@@ -347,6 +349,9 @@ def create_operation(operation):
             operationAsl = ASYNC_OPERATION_ASL
         elif operation["Type"] == "Sync":
             operationAsl = SYNC_OPERATION_ASL
+        elif operation["Type"] == "Await":
+            operationAsl = AWAIT_OPERATION_ASL
+        
 
         # Setup task parameters in step function.  This filters out the paramters from
         # the stage data structure that belong to this specific operation and passes the
@@ -367,7 +372,9 @@ def create_operation(operation):
         if operation["Type"] == "Async":
             operationAslString = operationAslString.replace("%%OPERATION_MONITOR_LAMBDA%%",
                                                             operation["MonitorLambdaArn"])
+        
         operationAslString = operationAslString.replace("%%OPERATION_START_LAMBDA%%", operation["StartLambdaArn"])
+
         operationAslString = operationAslString.replace("%%OPERATION_FAILED_LAMBDA%%", OPERATOR_FAILED_LAMBDA_ARN)
         operation["StateMachineAsl"] = operationAslString
 
@@ -651,6 +658,117 @@ SYNC_OPERATION_ASL = {
     }
 }
 
+AWAIT_OPERATION_ASL = {
+    "StartAt": "Filter %%OPERATION_NAME%% Media Type? (%%STAGE_NAME%%)",
+    "States": {
+        "Filter %%OPERATION_NAME%% Media Type? (%%STAGE_NAME%%)": {
+            "Type": "Task",
+            "Parameters": {
+                "StageName.$": "$.Name",
+                "Name":"%%OPERATION_NAME%%",
+                "Input.$":"$.Input",
+                "Configuration.$":"$.Configuration.%%OPERATION_NAME%%",
+                "AssetId.$":"$.AssetId",
+                "WorkflowExecutionId.$":"$.WorkflowExecutionId",
+                "Type": "%%OPERATION_MEDIA_TYPE%%",
+                "Status":"$.Status"
+            },
+            "Resource": FILTER_OPERATION_LAMBDA_ARN,
+            "ResultPath": "$.Outputs",
+            "OutputPath": "$.Outputs",
+            "Next": "Skip %%OPERATION_NAME%%? (%%STAGE_NAME%%)",
+            "Retry": [ {
+                "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.Unknown", "MasExecutionError"],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 2,
+                "BackoffRate": 2
+            }
+            ],
+            "Catch": [
+            {
+                "ErrorEquals": ["States.ALL"],
+                "Next": "%%OPERATION_NAME%% Failed (%%STAGE_NAME%%)",
+                "ResultPath": "$.Outputs"
+            }
+            ]
+
+        },
+        "Skip %%OPERATION_NAME%%? (%%STAGE_NAME%%)": {
+            "Type": "Choice",
+            "Choices": [{
+                "Variable": "$.Status",
+                "StringEquals": awsmie.OPERATION_STATUS_STARTED,
+                "Next": "Execute %%OPERATION_NAME%% (%%STAGE_NAME%%)"
+            }],
+            "Default": "%%OPERATION_NAME%% Not Started (%%STAGE_NAME%%)"
+        },
+        "%%OPERATION_NAME%% Not Started (%%STAGE_NAME%%)": {
+            "Type": "Succeed"
+        },
+        "Execute %%OPERATION_NAME%% (%%STAGE_NAME%%)": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+            "Parameters": {
+                  "FunctionName": "%%OPERATION_START_LAMBDA%%",
+                  "Payload": {
+                    "StageName.$": "$.Name",
+                    "Name": "%%OPERATION_NAME%%",
+                    "Input.$": "$.Input",
+                    "Configuration.$": "$.Configuration",
+                    "AssetId.$": "$.AssetId",
+                    "WorkflowExecutionId.$": "$.WorkflowExecutionId",
+                    "Type": "MetadataOnly",
+                    "Status": "$.Status",
+                    "TaskToken.$": "$$.Task.Token"
+                  }
+              },
+            "ResultPath": "$.Outputs",
+            "OutputPath": "$.Outputs",
+            "HeartbeatSeconds": 600,
+            "Next": "Did %%OPERATION_NAME%% Complete (%%STAGE_NAME%%)",
+            "Retry": [ {
+                "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.Unknown", "MasExecutionError"],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 2,
+                "BackoffRate": 2
+            }
+            ],
+            "Catch": [
+            {
+                "ErrorEquals": ["States.ALL"],
+                "Next": "%%OPERATION_NAME%% Failed (%%STAGE_NAME%%)",
+                "ResultPath": "$.Outputs"
+            }
+            ]
+        },
+        "Did %%OPERATION_NAME%% Complete (%%STAGE_NAME%%)": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.Status",
+                    "StringEquals": "Complete",
+                    "Next": "%%OPERATION_NAME%% Succeeded (%%STAGE_NAME%%)"
+                }
+            ],
+            "Default": "%%OPERATION_NAME%% Failed (%%STAGE_NAME%%)"
+        },
+        "%%OPERATION_NAME%% Failed (%%STAGE_NAME%%)": {
+            "Type": "Task",
+            "End": True,
+            "Resource": "%%OPERATION_FAILED_LAMBDA%%",
+            "ResultPath": "$",
+            "Retry": [{
+                "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "Lambda.Unknown", "MasExecutionError"],
+                "IntervalSeconds": 2,
+                "MaxAttempts": 2,
+                "BackoffRate": 2
+            }]
+        },
+        "%%OPERATION_NAME%% Succeeded (%%STAGE_NAME%%)": {
+            "Type": "Succeed"
+        }
+    }
+}
 
 @app.route('/workflow/operation', cors=True, methods=['PUT'], authorizer=authorizer)
 def update_operation():
@@ -1720,20 +1838,26 @@ def delete_workflow(Name):
             },
             ConsistentRead=True)
 
-        if "Item" in response:
-            workflow = response["Item"]
+        if "Item" not in response:
+            raise NotFoundError("Workflow name {} not found".format("Name"))
+            
+        workflow_executions = list_workflow_executions_by_name(Name)
+        active_workflow_executions = get_active_workflow_executions(workflow_executions)
 
-            # Delete the stage state machine
-            response = SFN_CLIENT.delete_state_machine(
-                stateMachineArn=workflow["StateMachineArn"]
-            )
+        if len(active_workflow_executions) > 0:
+            raise BadRequestError("Can't delete a workflow while there are active executions, please wait for the executions to complete or cancel them")
 
-            response = table.delete_item(
-                Key={
-                    'Name': Name
-                })
-        else:
-            workflow["Message"] = "Workflow '%s' not found" % Name
+        workflow = response["Item"]
+
+        # Delete the stage state machine
+        response = SFN_CLIENT.delete_state_machine(
+            stateMachineArn=workflow["StateMachineArn"]
+        )
+
+        response = table.delete_item(
+            Key={
+                'Name': Name
+            })
 
     except Exception as e:
 
@@ -1743,6 +1867,8 @@ def delete_workflow(Name):
 
     return workflow
 
+def get_active_workflow_executions(workflow_executions):
+    return filter(lambda execution: execution["Status"] in [awsmie.WORKFLOW_STATUS_STARTED, awsmie.WORKFLOW_STATUS_WAITING, awsmie.WORKFLOW_STATUS_RESUMED], workflow_executions)
 
 # ================================================================================================
 #  __        __         _     __ _                 _____                     _   _
@@ -1950,6 +2076,7 @@ def initialize_workflow_execution(trigger, Name, input, Configuration, asset_id)
     workflow_execution["Created"] = str(datetime.now().timestamp())
     workflow_execution["ResourceType"] = "WORKFLOW_EXECUTION"
     workflow_execution["ApiVersion"] = API_VERSION
+    workflow_execution["Name"] = Name
 
     # lookup base workflow
     response = workflow_table.get_item(
@@ -2010,7 +2137,7 @@ def update_workflow_execution(Id):
 
        Options:
 
-           Resume a workflow that is in a Waiting Status in a specific stage.
+           Resume or Cancel a workflow that is in a Waiting Status in a specific stage.
 
     Body:
 
@@ -2028,7 +2155,7 @@ def update_workflow_execution(Id):
 
             {
                 "Id: string,
-                "Status": "Resumed"
+                "Status": "[Resumed|Cancelled"
             }
 
     Raises:
@@ -2041,10 +2168,17 @@ def update_workflow_execution(Id):
     params = json.loads(app.current_request.raw_body.decode())
     logger.info(json.dumps(params))
 
-    if "WaitingStageName" in params:
-        response = resume_workflow_execution("api", Id, params["WaitingStageName"])
+    checkRequiredInput("WaitingStageName", params, "WaitingStageName is required")
+    checkRequiredInput("Status", params, "Status is required")
 
-    return response
+    if params["Status"] == awsmie.WORKFLOW_STATUS_RESUMED:
+        response = resume_workflow_execution("api", Id, params["WaitingStageName"])
+    elif params["Status"] == awsmie.WORKFLOW_STATUS_CANCELLED:
+        response = cancel_workflow_execution("api", Id, params["WaitingStageName"])
+    elif params["Status"] == awsmie.WORKFLOW_STATUS_WAITING:
+        response = continue_to_wait_workflow_execution("api", Id, params["WaitingStageName"])
+    else:
+        raise BadRequestError("Invalid Status {}".format(params["Status"]))
 
 def resume_workflow_execution(trigger, id, waiting_stage_name):
     """
@@ -2060,6 +2194,17 @@ def resume_workflow_execution(trigger, id, waiting_stage_name):
     workflow_execution["Id"] = id
     workflow_execution["Status"] = awsmie.WORKFLOW_STATUS_RESUMED
  
+    # Lookup TaskToken
+    try:
+        we = get_workflow_execution_by_id(id)
+    except ClientError as e:
+        raise NotFoundError("Workflow execution id {} not found".format(id))
+    if "TaskToken" in we:
+        workflow_execution["TaskToken"] = we["TaskToken"]
+
+    else:
+        raise BadRequestError("Workflow does not have a TaskToken")
+
     try:
         response = execution_table.update_item(
             Key={
@@ -2098,6 +2243,114 @@ def resume_workflow_execution(trigger, id, waiting_stage_name):
     
     return workflow_execution
 
+def cancel_workflow_execution(trigger, id, waiting_stage_name):
+    """
+    Get the workflow execution by id from dyanamo and assign to this object
+    :param id: The id of the workflow execution
+    :param status: The new status of the workflow execution
+
+    """
+    print("Resume workflow execution {} waiting stage = {}".format(id, waiting_stage_name))
+    execution_table = DYNAMO_RESOURCE.Table(WORKFLOW_EXECUTION_TABLE_NAME)
+
+    workflow_execution = {}
+    workflow_execution["Id"] = id
+    workflow_execution["Status"] = awsmie.WORKFLOW_STATUS_CANCELLED
+ 
+    # Lookup TaskToken
+    try:
+        we = get_workflow_execution_by_id(id)
+    except ClientError as e:
+        raise NotFoundError("Workflow execution id {} not found".format(id))
+    
+    try:
+        workflow_execution["TaskToken"] = we["TaskToken"]
+
+    except KeyError as e:
+        logger.error("Exception occurred during cancel workflow: {e}".format(e=e))
+        raise BadRequestError("Workflow does not have a TaskToken")
+
+    try:
+        workflow_execution["TaskToken"] = we["TaskEvent"]
+    except KeyError as e:
+        logger.error("Exception occurred during cancel workflow: {e}".format(e=e))
+        raise BadRequestError("Workflow does not have a TaskEvent")
+
+    try:
+        operator_object = MediaInsightsOperationHelper(we["WaitEvent"])
+        operator_object.update_workflow_status("Complete")
+        operator_object.add_workflow_metadata(WaitMessage="Workflow execution cancelled")
+
+        response = execution_table.update_item(
+            Key={
+                'Id': id
+            },
+            UpdateExpression='SET #workflow_status = :workflow_status',
+            ExpressionAttributeNames={
+                '#workflow_status': "Status"
+            },
+            ConditionExpression="#workflow_status = :workflow_waiting_status AND CurrentStage = :waiting_stage_name",
+            ExpressionAttributeValues={
+                ':workflow_waiting_status': awsmie.WORKFLOW_STATUS_WAITING,
+                ':workflow_status': awsmie.WORKFLOW_STATUS_CANCELLED,
+                ':waiting_stage_name': waiting_stage_name
+            }
+        )
+
+        response = SFN_CLIENT.stop_execution(
+            taskToken=we["StateMachineExecutionArn"],
+            error=json.dumps(json.dumps(operator_object.return_output_object())),
+            cause=""
+        )
+
+    except ClientError as e:
+        if e.response['Error']['Code'] == "ConditionalCheckFailedException":
+            print(e.response['Error']['Message'])
+            raise BadRequestError("Workflow status is not 'Waiting' or Current stage doesn't match the request")
+        else:
+            raise
+
+def continue_to_wait_workflow_execution(trigger, id, waiting_stage_name):
+    """
+    Get the workflow execution by id from dyanamo and assign to this object
+    :param id: The id of the workflow execution
+    :param status: The new status of the workflow execution
+
+    """
+    print("Send heartbeat for workflow execution {} waiting stage = {}".format(id, waiting_stage_name))
+    execution_table = DYNAMO_RESOURCE.Table(WORKFLOW_EXECUTION_TABLE_NAME)
+
+    workflow_execution = {}
+    workflow_execution["Id"] = id
+ 
+    # Lookup TaskToken
+    try:
+        we = get_workflow_execution_by_id(id)
+    except ClientError as e:
+        raise NotFoundError("Workflow execution id {} not found".format(id))
+    
+    try:
+        workflow_execution["TaskToken"] = we["TaskToken"]
+
+    except KeyError as e:
+        logger.error("Exception occurred during cancel workflow: {e}".format(e=e))
+        raise BadRequestError("Workflow does not have a TaskToken")
+
+    try:
+        operator_object = MediaInsightsOperationHelper(we["WaitEvent"])
+        operator_object.update_workflow_status("Complete")
+        operator_object.add_workflow_metadata(WaitMessage="Heartbeat")
+
+        response = SFN_CLIENT.send_task_heartbeat(
+            taskToken=we["StateMachineExecutionArn"]
+        )
+
+    except ClientError as e:
+        if e.response['Error']['Code'] == "ConditionalCheckFailedException":
+            print(e.response['Error']['Message'])
+            raise BadRequestError("Workflow status is not 'Waiting' or Current stage doesn't match the request")
+        else:
+            raise
 
 @app.route('/workflow/execution', cors=True, methods=['GET'], authorizer=authorizer)
 def list_workflow_executions():
@@ -2245,6 +2498,51 @@ def get_workflow_execution_by_id(Id):
 
     return workflow_execution
 
+@app.route('/workflow/execution/name/{Name}', cors=True, methods=['GET'], authorizer=authorizer)
+def list_workflow_executions_by_name(Name):
+    """ Get all workflow executions with the specified Name
+
+    Returns:
+        A list of dictionaries containing the workflow executions with the requested Name
+
+    Raises:
+        200: All workflows returned sucessfully.
+        404: Not found
+        500: Internal server error
+    """
+    table = DYNAMO_RESOURCE.Table(WORKFLOW_EXECUTION_TABLE_NAME)
+    projection_expression = "Id, AssetId, CurrentStage, StateMachineExecutionArn, #workflow_status, Workflow.#workflow_name"
+
+    response = table.query(
+        IndexName='WorkflowExecutionName',
+        ExpressionAttributeNames={
+            '#workflow_name': "Name"
+        },
+        ExpressionAttributeValues={
+            ':workflow_name': Name
+        },
+        KeyConditionExpression='#workflow_name = :workflow_name',
+        ProjectionExpression = projection_expression
+        )
+
+    workflow_executions = response['Items']
+    while 'LastEvaluatedKey' in response:
+        response = table.query(
+            ExclusiveStartKey=response['LastEvaluatedKey'],
+            IndexName='WorkflowExecutionStatus',
+            ExpressionAttributeNames={
+                '#workflow_status': "Status",
+                '#workflow_name': "Name"
+            },
+            ExpressionAttributeValues={
+                ':workflow_status': Status
+            },
+            KeyConditionExpression='#workflow_status = :workflow_status',
+            ProjectionExpression = projection_expression
+        )
+        workflow_executions.extend(response['Items'])
+
+    return workflow_executions
 
 @app.route('/workflow/execution/{Id}', cors=True, methods=['DELETE'], authorizer=authorizer)
 def delete_workflow_execution(Id):

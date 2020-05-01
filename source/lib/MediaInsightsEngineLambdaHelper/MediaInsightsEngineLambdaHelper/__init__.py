@@ -16,6 +16,7 @@ class Status:
     WORKFLOW_STATUS_RESUMED = "Resumed"
     WORKFLOW_STATUS_ERROR = "Error"
     WORKFLOW_STATUS_COMPLETE = "Complete"
+    WORKFLOW_STATUS_CANCELLED = "Cancelled"
 
     STAGE_STATUS_NOT_STARTED = "Not Started"
     STAGE_STATUS_STARTED = "Started"
@@ -53,6 +54,8 @@ class MediaInsightsOperationHelper:
             self.media = event["Media"]
         else:
             self.media = {}
+        if "TaskToken" in event:
+            self.taskToken = event["TaskToken"]
         self.base_s3_key = 'private/media/'
 
     def workflow_info(self):

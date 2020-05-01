@@ -1893,15 +1893,14 @@ Resources:
       StateMachineExecutionRoleArn: !GetAtt StepFunctionRole.Arn
 
   WaitOperation:
-    Type: Custom::CustomResource
+    Type: Custom::Operator
     Properties:
       ServiceToken: !Ref WorkflowCustomResourceArn
       ResourceType: "Operation"
       Name: "Wait"
-      Type: "Async"
+      Type: "Await"
       Configuration: { "MediaType": "MetadataOnly", "Enabled": false }
       StartLambdaArn: !Ref StartWaitOperationLambda
-      MonitorLambdaArn: !Ref CheckWaitOperationLambda
       StateMachineExecutionRoleArn: !GetAtt StepFunctionRole.Arn
   # Export operator names as outputs
 
